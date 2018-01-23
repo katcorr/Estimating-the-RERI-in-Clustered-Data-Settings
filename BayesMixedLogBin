@@ -1,0 +1,96 @@
+Implementation of a Bayesian log binomial random intercepts model
+
+We jointly used the “brms” and “rstan” packages in R to fit a Bayesian log binomial random intercepts model.  
+The “brms” package provides a user-friendly interface to fit Bayesian generalized linear mixed models using Stan. 
+The formula syntax is similar to that of R’s popular “lme4” package, and the sampling scheme is extremely efficient and thus 
+fast in terms of Bayesian computation.  A  log link is not allowed to be specified for a binary outcome in the “brms” package.  
+However, the “make_stanmodel” and “make_standata” functions within the “brms” package were used to help specify the 
+Stan file and data.  In particular, the “make_stanmodel” function was used to output Stan model code for a random intercepts
+logistic model.  The resulting Stan code was updated to change the model from a logit link to a log link and to calculate the RERI. 
+The “make_standata” function was used to create a list of the Stan data for the respective Stan model.  Then, the “stan” function
+within the “rstan” package was called to run the Stan model on the Stan data.
+
+R Code 
+
+library("brms")
+library("rstan”)
+rstan_options(auto_write=TRUE)
+options(mc.cores=parallel::detectCores())
+
+# make_stancode and make_standata functions are from BRMS package
+stan.logit <- make_stancode(outcome ~ x1 + x2 + x1:x2 + (1|Cluster)
+                    , data=simdata
+                    , family="bernoulli"(link="logit")
+                    , iter=1000
+                    # set gamma(2,0.1) prior on SD 
+                    , prior = set_prior("gamma(2,0.1)", class = "sd")
+)
+standata <- make_standata(outcome ~ x1 + x2 + x1:x2 + (1|Cluster)
+                                  , data=simdata) 
+
+
+# edit Stan code output from make_stancode
+# so using log link instead of logit and save file as 
+# “bayes_logbin_gamma.stan” (included below)
+
+stfit <- stan(file="bayes_logbin_gamma.stan"
+               , data=standata, chains=4, iter=2000)
+
+Stan Code for log binomial random intercepts model with a Gamma(2,0.1) prior on SD
+
+// generated with brms 1.6.1
+functions { 
+} 
+data { 
+  int<lower=1> N;  // total number of observations 
+  int Y[N];  // response variable 
+  int<lower=1> K;  // number of population-level effects 
+  matrix[N, K] X;  // population-level design matrix 
+  // data for group-level effects of ID 1 
+  int<lower=1> J_1[N]; 
+  int<lower=1> N_1; 
+  int<lower=1> M_1; 
+  vector[N] Z_1_1; 
+  int prior_only;  // should the likelihood be ignored? 
+} 
+transformed data { 
+  int Kc; 
+  matrix[N, K - 1] Xc;  // centered version of X 
+  vector[K - 1] means_X;  // column means of X before centering 
+  Kc = K - 1;  // the intercept is removed from the design matrix 
+  for (i in 2:K) { 
+    means_X[i - 1] = mean(X[, i]); 
+    Xc[, i - 1] = X[, i] - means_X[i - 1]; 
+  } 
+} 
+parameters { 
+  vector[Kc] b;  // population-level effects 
+  real temp_Intercept;  // temporary intercept 
+  vector<lower=0>[M_1] sd_1;  // group-level standard deviations 
+  vector[N_1] z_1[M_1];  // unscaled group-level effects 
+} 
+transformed parameters { 
+  // group-level effects 
+  vector[N_1] r_1_1; 
+  r_1_1 = sd_1[1] * (z_1[1]); 
+} 
+model { 
+  vector[N] mu; 
+  mu = Xc * b + temp_Intercept; 
+  for (n in 1:N) { 
+    mu[n] = mu[n] + (r_1_1[J_1[n]]) * Z_1_1[n]; 
+  } 
+  // prior specifications 
+  sd_1 ~ gamma(2,0.1); 
+  z_1[1] ~ normal(0, 1); 
+  // likelihood contribution 
+  if (!prior_only) { 
+    Y ~ bernoulli(exp(mu)); 
+  } 
+} 
+generated quantities { 
+  real b_Intercept;  // population-level intercept 
+  real RERI; 	     // relative excess risk due to interaction
+  b_Intercept = temp_Intercept - dot_product(means_X, b); 
+  RERI = exp(b[1]+b[2]+b[3]) - exp(b[1]) - exp(b[2]) + 1;
+} 
